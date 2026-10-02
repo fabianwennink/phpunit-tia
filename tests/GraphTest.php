@@ -997,6 +997,60 @@ final class GraphTest extends TestCase
     }
 
     #[Test]
+    public function tests_linked_to_lists_a_test_once_however_often_it_was_linked(): void
+    {
+        $this->repo->write('resources/views/layout.blade.php', "<div></div>\n");
+        $this->repo->write('tests/FooTest.php', "<?php\n");
+
+        $graph = $this->graph();
+        $graph->link('tests/FooTest.php', 'resources/views/layout.blade.php');
+        $graph->link('tests/FooTest.php', 'resources/views/layout.blade.php');
+
+        $this->assertSame(['tests/FooTest.php'], $graph->testsLinkedTo('resources/views/layout.blade.php'));
+    }
+
+    #[Test]
+    public function tests_linked_to_sees_edges_added_and_pruned_after_a_lookup(): void
+    {
+        $this->repo->write('resources/views/layout.blade.php', "<div></div>\n");
+        $this->repo->write('resources/views/gone.blade.php', "<div></div>\n");
+        $this->repo->write('tests/FooTest.php', "<?php\n");
+        $this->repo->write('tests/BarTest.php', "<?php\n");
+
+        $graph = $this->graph();
+        $graph->link('tests/FooTest.php', 'resources/views/layout.blade.php');
+        $graph->link('tests/FooTest.php', 'resources/views/gone.blade.php');
+        $this->assertSame(['tests/FooTest.php'], $graph->testsLinkedTo('resources/views/layout.blade.php'));
+
+        $graph->link('tests/BarTest.php', 'resources/views/layout.blade.php');
+        $this->assertSame(['tests/FooTest.php', 'tests/BarTest.php'], $graph->testsLinkedTo('resources/views/layout.blade.php'));
+
+        unlink($this->repo->path().'/tests/FooTest.php');
+        $graph->pruneMissingTests();
+        $this->assertSame(['tests/BarTest.php'], $graph->testsLinkedTo('resources/views/layout.blade.php'));
+
+        // Removing a source renumbers the file ids the index is keyed by.
+        unlink($this->repo->path().'/resources/views/gone.blade.php');
+        $graph->pruneMissingSources();
+        $this->assertSame(['tests/BarTest.php'], $graph->testsLinkedTo('resources/views/layout.blade.php'));
+        $this->assertSame([], $graph->testsLinkedTo('resources/views/gone.blade.php'));
+    }
+
+    #[Test]
+    public function tests_linked_to_survives_an_encode_and_decode(): void
+    {
+        $this->repo->write('resources/views/layout.blade.php', "<div></div>\n");
+        $this->repo->write('tests/FooTest.php', "<?php\n");
+
+        $graph = $this->graph();
+        $graph->link('tests/FooTest.php', 'resources/views/layout.blade.php');
+        $decoded = Graph::decode((string) $graph->encode(), $this->repo->path());
+
+        $this->assertNotNull($decoded);
+        $this->assertSame(['tests/FooTest.php'], $decoded->testsLinkedTo('resources/views/layout.blade.php'));
+    }
+
+    #[Test]
     public function affected_hands_the_graph_to_edge_aware_resolvers(): void
     {
         // A new partial has no edge yet. The resolver knows which template

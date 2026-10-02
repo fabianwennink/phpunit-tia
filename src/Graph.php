@@ -42,6 +42,15 @@ final class Graph implements Edges
     /** @var array<string, array<int, int>> */
     private array $edges = [];
 
+    /**
+     * $edges turned around, for testsLinkedTo(). Built on the first lookup
+     * and dropped on every change to $edges or $files: a run records edges
+     * after it is done looking them up, so it is built at most once.
+     *
+     * @var array<int, array<string, true>>|null source file id => test files
+     */
+    private ?array $testsBySource = null;
+
     /** @var array<string, mixed> */
     private array $fingerprint = [];
 
@@ -123,6 +132,7 @@ final class Graph implements Edges
         }
 
         $this->edges[$testRel][] = $this->fileIds[$sourceRel];
+        $this->testsBySource = null;
     }
 
     /**
@@ -514,16 +524,17 @@ final class Graph implements Edges
             return [];
         }
 
-        $id = $this->fileIds[$rel];
-        $tests = [];
+        if ($this->testsBySource === null) {
+            $this->testsBySource = [];
 
-        foreach ($this->edges as $testFile => $ids) {
-            if (in_array($id, $ids, true)) {
-                $tests[] = (string) $testFile;
+            foreach ($this->edges as $testFile => $ids) {
+                foreach ($ids as $id) {
+                    $this->testsBySource[$id][(string) $testFile] = true;
+                }
             }
         }
 
-        return $tests;
+        return array_map(strval(...), array_keys($this->testsBySource[$this->fileIds[$rel]] ?? []));
     }
 
     public function recordedAtSha(string $branch): ?string
@@ -784,6 +795,7 @@ final class Graph implements Edges
         foreach (array_keys($this->edges) as $testRel) {
             if (! is_file($root.$testRel)) {
                 unset($this->edges[$testRel]);
+                $this->testsBySource = null;
             }
         }
     }
@@ -840,6 +852,7 @@ final class Graph implements Edges
 
         $this->files = $files;
         $this->fileIds = array_flip($files);
+        $this->testsBySource = null;
     }
 
     /**
