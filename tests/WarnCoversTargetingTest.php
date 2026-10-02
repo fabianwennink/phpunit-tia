@@ -89,7 +89,7 @@ final class WarnCoversTargetingTest extends TestCase
 
         $output = $this->runProject(['--disable-coverage-targeting']);
 
-        $this->assertStringNotContainsString('phpunit-tia:', $output);
+        $this->assertStringNotContainsString('#[Covers*] metadata', $output);
     }
 
     #[Test]
@@ -99,7 +99,7 @@ final class WarnCoversTargetingTest extends TestCase
 
         $output = $this->runProject([]);
 
-        $this->assertStringNotContainsString('phpunit-tia:', $output);
+        $this->assertStringNotContainsString('#[Covers*] metadata', $output);
     }
 
     private function writeTest(bool $covers): void

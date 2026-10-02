@@ -80,6 +80,53 @@ final class GraphTest extends TestCase
     }
 
     #[Test]
+    public function affected_counts_per_changed_file_without_changing_what_it_matches(): void
+    {
+        $this->repo->write('tests/FooTest.php', "<?php\n");
+        $this->repo->write('tests/ListenerTest.php', "<?php\n");
+
+        $graph = $this->graph();
+        $graph->link('tests/FooTest.php', 'src/Foo.php');
+        $graph->link('tests/FooTest.php', 'src/Bar.php');
+        $graph->link('tests/ListenerTest.php', 'app/Listeners/Known.php');
+        $graph->setResolvers([new class implements Resolver
+        {
+            public function resolve(string $projectRoot, string $changedRelativePath): array
+            {
+                return $changedRelativePath === 'database/migrations/2024_01_01_create_widgets_table.php'
+                    ? ['tests/WidgetTest.php']
+                    : [];
+            }
+        }]);
+
+        $changed = [
+            'src/Foo.php',
+            'src/Bar.php',
+            'tests/FooTest.php',
+            'app/Listeners/New.php',
+            'app/Listeners/Other.php',
+            'database/migrations/2024_01_01_create_widgets_table.php',
+        ];
+
+        $reasons = [];
+        $affected = $graph->affected($changed, $reasons);
+
+        $countedReasons = [];
+        $counts = [];
+
+        $this->assertSame($affected, $graph->affected($changed, $countedReasons, $counts));
+        $this->assertSame($reasons, $countedReasons);
+        $this->assertSame([
+            'src/Foo.php' => 1,
+            'src/Bar.php' => 1,
+            'tests/FooTest.php' => 1,
+            'database/migrations/2024_01_01_create_widgets_table.php' => 1,
+            'app/Listeners/New.php' => 1,
+            'app/Listeners/Other.php' => 1,
+        ], $counts);
+    }
+
+    #[Test]
     public function affected_treats_a_changed_test_file_as_its_own_unit_of_work(): void
     {
         $this->repo->write('tests/FooTest.php', "<?php\n");

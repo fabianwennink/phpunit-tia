@@ -118,6 +118,22 @@ phpunit --disable-coverage-targeting
 
 Pair it with `PHPUNIT_TIA_FRESH=1` if you're deliberately rebuilding a baseline. You only need the flag when recording — replaying a baseline, or running without a coverage driver, works fine without it.
 
+### Run summary
+Every run starts with one line on STDERR saying why TIA is inactive, or how many test files the changes affect. Test files with a recorded result that was not a pass run anyway; the `+` counts those:
+
+```
+phpunit-tia: 12 of 165 test files affected (+1 without a cached pass).
+phpunit-tia: inactive: composer.lock/phpunit.xml changed since the stored graph was written.
+```
+
+With `PHPUNIT_TIA_DEBUG=1` (see below), the line also lists the changed files that affect the most test files:
+
+```
+phpunit-tia: 12 of 165 test files affected. By changed file: src/Models/Order.php (11), src/Services/Mailer.php (2), tests/OrderTest.php (1).
+```
+
+Running with `--fail-on-skipped` or `--display-skipped` reports TIA as inactive: it replays a cached pass as a skip, so under either option every test runs. ParaTest workers don't write it, as each would repeat it.
+
 ### Debugging a test that won't skip
 If a test keeps running when you expect TIA to skip it, pass an environment variable to have TIA explain why on STDERR, one line per test that actually ran:
 

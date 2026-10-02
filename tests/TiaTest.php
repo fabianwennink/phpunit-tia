@@ -13,6 +13,7 @@ use JMac\Testing\PhpUnit\Tia\ResultCollector;
 use JMac\Testing\PhpUnit\Tia\Storage;
 use JMac\Testing\PhpUnit\Tia\Tests\Support\TempGitRepository;
 use JMac\Testing\PhpUnit\Tia\Tia;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use PHPUnit\Framework\TestStatus\TestStatus;
@@ -486,6 +487,137 @@ final class TiaTest extends TestCase
             "a skip would violate this run's fail-on-skipped/display-skipped (or similar) policy",
             Tia::instance()->debugReason($class, $method),
         );
+    }
+
+    #[Test]
+    public function summary_reports_why_tia_is_inactive(): void
+    {
+        $this->assertSame(
+            'inactive: TIA is not configured for this run',
+            Tia::instance()->summary(),
+        );
+    }
+
+    #[Test]
+    public function summary_lists_changed_files_only_in_debug_mode(): void
+    {
+        $this->recordPassingTest();
+
+        $this->repo->write('src/Foo.php', "<?php\n\nclass Foo\n{\n    public int \$x = 1;\n}\n");
+
+        Tia::configure($this->repo->path(), 'local');
+
+        $this->assertSame('1 of 1 test files affected', Tia::instance()->summary());
+
+        putenv('PHPUNIT_TIA_DEBUG=1');
+
+        try {
+            // Counted while TIA boots, so it has to boot again in debug mode.
+            Tia::configure($this->repo->path(), 'local');
+
+            $this->assertSame(
+                '1 of 1 test files affected. By changed file: src/Foo.php (1)',
+                Tia::instance()->summary(),
+            );
+        } finally {
+            putenv('PHPUNIT_TIA_DEBUG');
+        }
+    }
+
+    #[Test]
+    public function summary_lists_each_changed_file_that_affects_a_test(): void
+    {
+        $this->recordPassingTest();
+
+        // FooTest also covers src/Bar.php. Its per-test reason names only the
+        // first changed file that matched, so the summary must count per file.
+        $state = new FileState(Storage::resolve($this->repo->path(), 'local'));
+        $graph = Graph::decode((string) $state->read(Storage::GRAPH_KEY), $this->repo->path());
+        $graph->link($this->repo->path().'/tests/FooTest.php', $this->repo->path().'/src/Bar.php');
+        $state->write(Storage::GRAPH_KEY, (string) $graph->encode());
+
+        $this->repo->write('src/Foo.php', "<?php\n\nclass Foo\n{\n    public int \$x = 1;\n}\n");
+        $this->repo->write('src/Bar.php', "<?php\n\nclass Bar\n{\n}\n");
+
+        putenv('PHPUNIT_TIA_DEBUG=1');
+
+        try {
+            Tia::configure($this->repo->path(), 'local');
+
+            $this->assertSame(
+                '1 of 1 test files affected. By changed file: src/Bar.php (1), src/Foo.php (1)',
+                Tia::instance()->summary(),
+            );
+        } finally {
+            putenv('PHPUNIT_TIA_DEBUG');
+        }
+    }
+
+    #[Test]
+    public function summary_lists_at_most_five_changed_files(): void
+    {
+        $this->recordPassingTest();
+
+        $state = new FileState(Storage::resolve($this->repo->path(), 'local'));
+        $graph = Graph::decode((string) $state->read(Storage::GRAPH_KEY), $this->repo->path());
+
+        foreach (['A', 'B', 'C', 'D', 'E', 'F'] as $name) {
+            $graph->link($this->repo->path().'/tests/FooTest.php', $this->repo->path()."/src/{$name}.php");
+            $this->repo->write("src/{$name}.php", "<?php\n\nclass {$name}\n{\n}\n");
+        }
+
+        $state->write(Storage::GRAPH_KEY, (string) $graph->encode());
+
+        putenv('PHPUNIT_TIA_DEBUG=1');
+
+        try {
+            Tia::configure($this->repo->path(), 'local');
+
+            $this->assertSame(
+                '1 of 1 test files affected. By changed file: src/A.php (1), src/B.php (1), src/C.php (1), src/D.php (1), src/E.php (1), and 1 more',
+                Tia::instance()->summary(),
+            );
+        } finally {
+            putenv('PHPUNIT_TIA_DEBUG');
+        }
+    }
+
+    #[Test]
+    public function summary_reports_no_affected_test_files(): void
+    {
+        $this->recordPassingTest();
+
+        Tia::configure($this->repo->path(), 'local');
+
+        $this->assertSame('0 of 1 test files affected', Tia::instance()->summary());
+    }
+
+    #[Test]
+    #[DataProvider('statusesWithoutACachedPass')]
+    public function summary_counts_tests_that_run_without_a_cached_pass(TestStatus $status): void
+    {
+        [$class, $method] = $this->recordTest($status);
+
+        Tia::configure($this->repo->path(), 'local');
+
+        // Not replayed, whatever the failOn*/displayDetailsOn* policy, so it runs.
+        $this->assertNull(Tia::instance()->cachedStatusIfUnaffected($class, $method));
+        $this->assertSame(
+            '0 of 1 test files affected (+1 without a cached pass)',
+            Tia::instance()->summary(),
+        );
+    }
+
+    /**
+     * @return array<string, array{0: TestStatus}>
+     */
+    public static function statusesWithoutACachedPass(): array
+    {
+        return [
+            'incomplete' => [TestStatus::incomplete('later')],
+            'skipped' => [TestStatus::skipped('')],
+            'failure' => [TestStatus::failure('boom')],
+        ];
     }
 
     /**

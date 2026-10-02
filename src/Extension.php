@@ -15,6 +15,7 @@ use JMac\Testing\PhpUnit\Tia\Subscribers\RecordTestPrepared;
 use JMac\Testing\PhpUnit\Tia\Subscribers\RecordTestSkipped;
 use JMac\Testing\PhpUnit\Tia\Subscribers\WarnCoversTargeting;
 use JMac\Testing\PhpUnit\Tia\Subscribers\WriteGraph;
+use PHPUnit\Framework\TestStatus\TestStatus;
 use PHPUnit\Runner\Extension\Extension as ExtensionContract;
 use PHPUnit\Runner\Extension\Facade;
 use PHPUnit\Runner\Extension\ParameterCollection;
@@ -26,7 +27,7 @@ final class Extension implements ExtensionContract
     public function bootstrap(Configuration $configuration, Facade $facade, ParameterCollection $parameters): void
     {
         if (! Tia::isEnabled()) {
-            fwrite(STDERR, "phpunit-tia: disabled via PHPUNIT_TIA=0.\n");
+            fwrite(STDERR, "phpunit-tia: inactive: disabled via PHPUNIT_TIA=0.\n");
 
             return;
         }
@@ -42,6 +43,12 @@ final class Extension implements ExtensionContract
         // does. This lets RunWithTia keep working on a machine that lost its
         // driver after the graph was written elsewhere (e.g. CI vs. local).
         Tia::configure($projectRoot, $storageMode, $resolvers, $fallbackBranch);
+
+        // Each ParaTest worker bootstraps its own PHPUnit, so the summary
+        // would repeat once per worker.
+        if (! $this->runningUnderParaTest()) {
+            fwrite(STDERR, 'phpunit-tia: '.$this->summary().".\n");
+        }
 
         if (! $this->coverageDriverAvailable()) {
             fwrite(STDERR, "phpunit-tia: no coverage driver (pcov/xdebug) available — recording disabled for this run.\n");
@@ -83,6 +90,22 @@ final class Extension implements ExtensionContract
             new WarnCoversTargeting,
             new WriteGraph($projectRoot, $results, $storageMode, $scope),
         );
+    }
+
+    /**
+     * RunWithTia never skips when this run's configuration would fail on, or
+     * display details for, a skip — every test runs, so an affected count
+     * would read as if the rest were skipped.
+     */
+    private function summary(): string
+    {
+        $tia = Tia::instance();
+
+        if ($tia->isActive() && $tia->shouldRerunStatus(TestStatus::skipped())) {
+            return "inactive: a skip would violate this run's fail-on-skipped/display-skipped policy — every test runs";
+        }
+
+        return $tia->summary();
     }
 
     /**

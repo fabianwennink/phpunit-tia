@@ -239,9 +239,16 @@ final class Graph implements Edges
      *                                          file => human-readable reason it was marked affected.
      *                                          First pass to mark a given test wins, mirroring the
      *                                          `isset($affectedSet[...])` short-circuiting below.
+     * @param  array<string, int>|null  $countsPerChangedFile  Out-param (§ diagnostics), only filled
+     *                                                         when passed as an array: project-relative
+     *                                                         changed file => number of test files it
+     *                                                         affected. Unlike $reasons, a test counts
+     *                                                         for every changed file that matched it,
+     *                                                         which costs extra passes over the edges —
+     *                                                         left null, nothing extra is done.
      * @return array<int, string>
      */
-    public function affected(array $changedFiles, array &$reasons = []): array
+    public function affected(array $changedFiles, array &$reasons = [], ?array &$countsPerChangedFile = null): array
     {
         $relPaths = [];
 
@@ -258,11 +265,16 @@ final class Graph implements Edges
 
         $affectedSet = [];
         $reasons = [];
+        $byChangedFile = $countsPerChangedFile === null ? null : [];
 
-        $unknown = $this->applyPhpEdgeChanges($relPaths, $testPaths, $affectedSet, $reasons);
-        $this->applyTestFileChanges($relPaths, $testPaths, $affectedSet, $reasons);
-        $handled = $this->applyResolvers($unknown, $affectedSet, $reasons);
-        $this->applyUnknownSourceDirs(array_values(array_diff($unknown, $handled)), $affectedSet, $reasons);
+        $unknown = $this->applyPhpEdgeChanges($relPaths, $testPaths, $affectedSet, $reasons, $byChangedFile);
+        $this->applyTestFileChanges($relPaths, $testPaths, $affectedSet, $reasons, $byChangedFile);
+        $handled = $this->applyResolvers($unknown, $affectedSet, $reasons, $byChangedFile);
+        $this->applyUnknownSourceDirs(array_values(array_diff($unknown, $handled)), $affectedSet, $reasons, $byChangedFile);
+
+        if ($byChangedFile !== null) {
+            $countsPerChangedFile = array_map(count(...), $byChangedFile);
+        }
 
         return array_keys($affectedSet);
     }
@@ -276,9 +288,10 @@ final class Graph implements Edges
      * @param  list<string>  $relPaths
      * @param  array<string, true>  $affectedSet
      * @param  array<string, string>  $reasons
+     * @param  array<string, array<string, true>>|null  $byChangedFile  null unless counting per changed file
      * @return list<string>
      */
-    private function applyPhpEdgeChanges(array $relPaths, TestPaths $testPaths, array &$affectedSet, array &$reasons): array
+    private function applyPhpEdgeChanges(array $relPaths, TestPaths $testPaths, array &$affectedSet, array &$reasons, ?array &$byChangedFile): array
     {
         $changedIds = [];
         $unknown = [];
@@ -306,14 +319,20 @@ final class Graph implements Edges
         // followed by `break` on a key that is unique by definition. The guard
         // that used to sit here could never evaluate true. If the call order
         // ever changes so the set arrives populated, the worst case is
-        // re-setting a key that is already `true`.
+        // re-setting a key that is already `true`. Counting per changed file
+        // skips that `break`, so every changed file the test covers counts;
+        // `??=` keeps the reason naming the first, as without counting.
         foreach ($this->edges as $testFile => $ids) {
             foreach ($ids as $id) {
                 if (isset($changedIds[$id])) {
                     $affectedSet[$testFile] = true;
-                    $reasons[$testFile] = "source changed: {$changedIds[$id]}";
+                    $reasons[$testFile] ??= "source changed: {$changedIds[$id]}";
 
-                    break;
+                    if ($byChangedFile === null) {
+                        break;
+                    }
+
+                    $byChangedFile[$changedIds[$id]][$testFile] = true;
                 }
             }
         }
@@ -328,11 +347,12 @@ final class Graph implements Edges
      * @param  list<string>  $relPaths
      * @param  array<string, true>  $affectedSet
      * @param  array<string, string>  $reasons
+     * @param  array<string, array<string, true>>|null  $byChangedFile  null unless counting per changed file
      */
-    private function applyTestFileChanges(array $relPaths, TestPaths $testPaths, array &$affectedSet, array &$reasons): void
+    private function applyTestFileChanges(array $relPaths, TestPaths $testPaths, array &$affectedSet, array &$reasons, ?array &$byChangedFile): void
     {
         foreach ($relPaths as $rel) {
-            if (isset($affectedSet[$rel])) {
+            if (isset($affectedSet[$rel]) && $byChangedFile === null) {
                 continue;
             }
 
@@ -341,6 +361,14 @@ final class Graph implements Edges
             }
 
             if (! is_file($this->projectRoot.'/'.$rel)) {
+                continue;
+            }
+
+            if ($byChangedFile !== null) {
+                $byChangedFile[$rel][$rel] = true;
+            }
+
+            if (isset($affectedSet[$rel])) {
                 continue;
             }
 
@@ -362,23 +390,29 @@ final class Graph implements Edges
      * @param  list<string>  $unknown
      * @param  array<string, true>  $affectedSet
      * @param  array<string, string>  $reasons
+     * @param  array<string, array<string, true>>|null  $byChangedFile  null unless counting per changed file
      */
-    private function applyUnknownSourceDirs(array $unknown, array &$affectedSet, array &$reasons): void
+    private function applyUnknownSourceDirs(array $unknown, array &$affectedSet, array &$reasons, ?array &$byChangedFile): void
     {
         if ($unknown === []) {
             return;
         }
 
         $unknownDirs = [];
+        $unknownInDir = [];
 
         foreach ($unknown as $rel) {
             // Last writer wins when two unknown files share a directory —
             // fine for a diagnostic example, doesn't affect which tests match.
             $unknownDirs[dirname($rel)] = $rel;
+            $unknownInDir[dirname($rel)][] = $rel;
         }
 
         foreach ($this->edges as $testFile => $ids) {
-            if (isset($affectedSet[$testFile])) {
+            // Counting per changed file still visits a test that is already
+            // affected, and every directory it matches: each unknown file in
+            // those directories counts for it.
+            if (isset($affectedSet[$testFile]) && $byChangedFile === null) {
                 continue;
             }
 
@@ -390,10 +424,18 @@ final class Graph implements Edges
                 $dir = dirname($this->files[$id]);
 
                 if (isset($unknownDirs[$dir])) {
-                    $affectedSet[$testFile] = true;
-                    $reasons[$testFile] = "unresolved change '{$unknownDirs[$dir]}' shares a directory with covered source '{$this->files[$id]}'";
+                    if (! isset($affectedSet[$testFile])) {
+                        $affectedSet[$testFile] = true;
+                        $reasons[$testFile] = "unresolved change '{$unknownDirs[$dir]}' shares a directory with covered source '{$this->files[$id]}'";
+                    }
 
-                    break;
+                    if ($byChangedFile === null) {
+                        break;
+                    }
+
+                    foreach ($unknownInDir[$dir] as $rel) {
+                        $byChangedFile[$rel][$testFile] = true;
+                    }
                 }
             }
         }
@@ -414,9 +456,10 @@ final class Graph implements Edges
      * @param  list<string>  $unknown
      * @param  array<string, true>  $affectedSet
      * @param  array<string, string>  $reasons
+     * @param  array<string, array<string, true>>|null  $byChangedFile  null unless counting per changed file
      * @return list<string> the paths a resolver claimed
      */
-    private function applyResolvers(array $unknown, array &$affectedSet, array &$reasons): array
+    private function applyResolvers(array $unknown, array &$affectedSet, array &$reasons, ?array &$byChangedFile): array
     {
         if ($unknown === [] || $this->resolvers === []) {
             return [];
@@ -442,6 +485,10 @@ final class Graph implements Edges
                     if ($testRel !== null) {
                         $affectedSet[$testRel] = true;
                         $reasons[$testRel] ??= 'resolver '.$resolver::class." matched changed file '{$rel}'";
+
+                        if ($byChangedFile !== null) {
+                            $byChangedFile[$rel][$testRel] = true;
+                        }
                     }
                 }
 
@@ -541,6 +588,33 @@ final class Graph implements Edges
             8 => TestStatus::error($r['message']),
             default => TestStatus::unknown(),
         };
+    }
+
+    /**
+     * Test files with at least one recorded result that is not a success.
+     * Unlike testFilesToRerun(), no failOn* / displayDetailsOn* policy applies:
+     * Tia::cachedStatusIfUnaffected() only ever replays a cached success, so
+     * each of these files runs at least one test whatever the policy says.
+     *
+     * @return array<int, string>
+     */
+    public function testFilesWithoutCachedPass(string $branch): array
+    {
+        $files = [];
+
+        foreach ($this->baselineFor($branch)['results'] as $result) {
+            if ($result['status'] === 0 || ($result['file'] ?? '') === '') {
+                continue;
+            }
+
+            $rel = $this->relative($result['file']);
+
+            if ($rel !== null) {
+                $files[$rel] = true;
+            }
+        }
+
+        return array_keys($files);
     }
 
     /**

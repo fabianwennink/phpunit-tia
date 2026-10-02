@@ -46,6 +46,7 @@ final class Tia
     /**
      * @param  array<string, true>  $affectedTestFiles
      * @param  array<string, string>  $affectedReasons
+     * @param  array<string, int>  $affectedPerChangedFile
      */
     private function __construct(
         private readonly bool $active,
@@ -54,6 +55,8 @@ final class Tia
         array $affectedTestFiles,
         array $affectedReasons = [],
         private readonly ?string $inactiveReason = null,
+        private readonly array $affectedPerChangedFile = [],
+        private readonly int $rerunWithoutCachedPass = 0,
     ) {
         $this->affectedTestFiles = $affectedTestFiles;
         $this->affectedReasons = $affectedReasons;
@@ -231,6 +234,56 @@ final class Tia
         return $this->graph?->recordedAtSha($this->branch);
     }
 
+    /** Whether this run replays cached passes at all — false for every inactive reason summary() reports. */
+    public function isActive(): bool
+    {
+        return $this->active && $this->graph !== null;
+    }
+
+    /**
+     * One line for the whole run, written by Extension::bootstrap(): why TIA
+     * is inactive, or how many test files the changes affect, plus those that
+     * run anyway because their last result was not a pass. Under
+     * PHPUNIT_TIA_DEBUG=1 it also names the changed files that affect the
+     * most, counted per changed file during the one affected() pass in
+     * attemptBoot().
+     */
+    public function summary(): string
+    {
+        if (! $this->active || $this->graph === null) {
+            return 'inactive: '.($this->inactiveReason ?? 'TIA inactive this run');
+        }
+
+        $affected = count($this->affectedTestFiles);
+        $total = count(array_unique([...$this->graph->allTestFiles(), ...array_keys($this->affectedTestFiles)]));
+        $summary = "{$affected} of {$total} test files affected";
+
+        if ($this->rerunWithoutCachedPass > 0) {
+            $summary .= " (+{$this->rerunWithoutCachedPass} without a cached pass)";
+        }
+
+        if ($this->affectedPerChangedFile === []) {
+            return $summary;
+        }
+
+        // Most affected first; ties by path, as arsort() is stable.
+        $perFile = $this->affectedPerChangedFile;
+        ksort($perFile);
+        arsort($perFile);
+
+        $listed = [];
+
+        foreach (array_slice($perFile, 0, 5, true) as $file => $count) {
+            $listed[] = "{$file} ({$count})";
+        }
+
+        if (count($perFile) > 5) {
+            $listed[] = 'and '.(count($perFile) - 5).' more';
+        }
+
+        return $summary.'. By changed file: '.implode(', ', $listed);
+    }
+
     /**
      * `PHPUNIT_TIA_DEBUG=1` companion to {@see cachedStatusIfUnaffected()} —
      * called by the trait only once it's already decided *not* to skip, to
@@ -378,9 +431,14 @@ final class Tia
         $changed = $changedFiles->filterUnchangedSinceLastRun($changed, $graph->lastRunTree($branch));
 
         $reasons = [];
-        $affected = $graph->affected($changed, $reasons);
 
-        return new self(true, $graph, $branch, array_fill_keys($affected, true), $reasons);
+        // Counted per changed file only for PHPUNIT_TIA_DEBUG's summary:
+        // without it, affected() does no more than it needs to.
+        $affectedPerChangedFile = self::isDebug() ? [] : null;
+        $affected = $graph->affected($changed, $reasons, $affectedPerChangedFile);
+        $rerun = count(array_diff($graph->testFilesWithoutCachedPass($branch), $affected));
+
+        return new self(true, $graph, $branch, array_fill_keys($affected, true), $reasons, null, $affectedPerChangedFile ?? [], $rerun);
     }
 
     private static function inactive(?string $reason = null): self
