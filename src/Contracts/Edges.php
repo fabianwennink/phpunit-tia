@@ -17,4 +17,13 @@ interface Edges
      * @return list<string> project-relative test files with an edge to $sourceFile
      */
     public function testsLinkedTo(string $sourceFile): array;
+
+    /**
+     * Every test file the graph knows. A test it does not know runs anyway,
+     * so this is every test a resolver may need to run for a change that
+     * affects all of them, such as a config file.
+     *
+     * @return array<int, string> project-relative test files
+     */
+    public function allTestFiles(): array;
 }
