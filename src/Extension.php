@@ -70,7 +70,12 @@ final class Extension implements ExtensionContract
             $parallelRun = ParallelRun::join($projectRoot, $storageMode);
 
             if ($parallelRun === null) {
-                fwrite(STDERR, "phpunit-tia: running under ParaTest without a coordinating parent process, recording disabled to avoid a corrupted baseline.\n");
+                // Every worker lands here, so only the first one says so.
+                $token = getenv('TEST_TOKEN');
+
+                if ($token === false || $token === '1') {
+                    fwrite(STDERR, "phpunit-tia: running under ParaTest without a coordinating parent process, recording disabled to avoid a corrupted baseline.\n");
+                }
 
                 return;
             }
